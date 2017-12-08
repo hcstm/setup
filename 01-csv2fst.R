@@ -18,8 +18,8 @@ sirus <- data.table::fread(
   encoding = 'Latin-1')
 
 # Sauvegarde en fst -------------------------------------------------------
-fst::write.fst(rp, file.path(data_dir, "rp_ileDeFrance.fst"), 100)
-fst::write.fst(sirus, file.path(data_dir, "sirus.fst"), 100)
+fst::write.fst(rp, file.path(data_dir, "rp_ileDeFrance.fst"), compress = 0)
+fst::write.fst(sirus, file.path(data_dir, "sirus.fst"), compress = 0)
 
 
 
