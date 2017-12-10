@@ -5,7 +5,7 @@ if(!require(fst)) install.packages("fst")
 
 # Importation des données ----------------------------------------------------------
 # Modifier le chemin ci-dessous pour indiquer le chemin du répertoire où sont stockés les csv :
-data_dir <- "../Hackathon/data"
+data_dir <- "../data"
 
 rp <- data.table::fread(
   file.path(data_dir, "rp_ileDeFrance.csv"), 

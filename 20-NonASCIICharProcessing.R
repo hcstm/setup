@@ -1,5 +1,6 @@
 # Importation des fst -----------------------------------------------------
-data_dir <- "../Hackathon/data"
+# Modifier le chemin ci-dessous pour indiquer le chemin du répertoire où sont stockés les fst :
+data_dir <- "../data"
 
 rp <- fst::read.fst(
   file.path(data_dir, "rp_ileDeFrance.fst"),
