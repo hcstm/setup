@@ -1,0 +1,275 @@
+---
+title: "Nettoyage des caractères"
+author: "Romain Lesur"
+date: "11 décembre 2017"
+output: 
+  html_document:
+    df_print: paged
+---
+
+
+```{r klippy, echo=FALSE, include=TRUE}
+klippy::klippy()
+```
+
+## Mise en place
+### Importation des fichiers csv
+Il faut commencer par indiquer le répertoire où se trouvent les `csv` :
+
+```{r spec_data_dir}
+data_dir <- "../data"
+``` 
+
+```{r load_data}
+rp <- data.table::fread(
+  file.path(data_dir, "rp_ileDeFrance.csv"), 
+  colClasses = rep("character", 46),
+  encoding = 'Latin-1')
+
+sirus <- data.table::fread(
+  file.path(data_dir, "sirus.csv"), 
+  colClasses = rep('character', 41), 
+  encoding = 'Latin-1')
+```
+
+### Création de fonctions utilitaires
+
+Ces deux fonctions permettent de trouver les points de code `Latin-1` en hexadécimal et en décimal d'un caractère donné : 
+```{r utils_fn}
+u_codepoint_hex <- function(char) {
+  if(length(char) == 0) return(character(0))
+  if(length(char) == 1) {
+    if(is.na(char)) {
+      return(NA_character_)
+    } else {
+      assertthat::assert_that(nchar(char) == 1)
+      paste0("0x", 
+             paste0(
+               as.character(unlist(iconv(char, localeToCharset()[1], "UNICODEBIG", toRaw = TRUE))),
+               collapse=""
+             )
+      )
+    }
+  } else {
+    vapply(char, u_codepoint_hex, FUN.VALUE = character(1))
+  }
+}
+
+u_codepoint_int <- function(char) {
+  if(length(char) == 0) return(integer(0))
+  if(length(char) == 1) {
+    if(is.na(char)) {
+      return(NA_integer_)
+    } else {
+      as.integer(as.hexmode(u_codepoint_hex(char)))
+    }
+  } else {
+    vapply(char, u_codepoint_int, FUN.VALUE = integer(1))
+  }
+}
+```
+
+Cette fonction a été décrite dans le `Rmd` précédent :
+```{r def_nb_char}
+nb_char <- function(DT, var) {
+  get(DT)[
+    , .(.I, char_list = strsplit(get(var), ""))
+    ][
+      , .(char = unlist(char_list))
+      ][
+        , .N, by = char
+        ][
+          , .(hex_char = u_codepoint_hex(char), int_char = u_codepoint_int(char), N), 
+          by = char
+          ][
+            order(int_char)
+            ]
+}
+```
+
+### Analyse brute des caractères de SIRUS 
+
+```{r ens_char_sirus, cache=TRUE}
+var_sirus <- colnames(sirus)
+tables_char_sirus <- purrr::map2("sirus", var_sirus, nb_char)
+names(tables_char_sirus) <- var_sirus
+ens_char_sirus <- data.table::rbindlist(tables_char_sirus)[
+  , .(N = sum(N)), by = .(char, hex_char, int_char)
+  ][
+    order(int_char)
+    ]
+ens_char_sirus
+```
+
+## Passage des caractères alphabétiques non-ASCII en ASCII
+
+On va utiliser la fonction `stringi::stri_trans_general` :
+
+```{r def_to_ascii}
+to_ascii <- function(x) stringi::stri_trans_general(x, "Latin-ASCII")
+```
+
+Les caractères alphabétiques non-ASCII seront ainsi transformés de la façon suivante :
+
+```{r ex_to_ascii, echo=FALSE, cache=TRUE}
+ens_char_sirus[
+  , .(char, hex_char, char_t = to_ascii(char))
+][
+  , .(char, 
+      hex_char, 
+      char_t, 
+      char_t_hex = 
+        vapply(
+          lapply(strsplit(char_t, ""), u_codepoint_hex), 
+          paste0, 
+          collapse = "", 
+          FUN.VALUE = character(1)
+        )
+      )
+]
+```
+
+Pour passer les caractères non-ASCII en ASCII, il faut faire :
+
+```{r sirus_to_ascii, eval=FALSE}
+nom_col <- colnames(sirus)
+
+for(j in nom_col) data.table::set(sirus, j = j, value = to_ascii(sirus[[j]]))
+```
+
+## Traitement du caractère ¿
+### Cas d'apparition
+```{r details_191}
+champ_char_191 <- data.table::rbindlist(tables_char_sirus, idcol = TRUE)[
+  int_char == 191, .(champ = .id, char, N)
+  ][
+    order(champ)
+    ]
+
+champ_like_pattern <- function(champ, pattern) {
+  `%like%` <- data.table::`%like%`
+  sirus[get(champ) %like% pattern, .(sirus_id, nic, champ = champ, valeur = get(champ))]
+}
+
+details_char_191 <- 
+  purrr::map2(champ_char_191$champ, champ_char_191$char, champ_like_pattern)
+
+data.table::rbindlist(details_char_191)[order(sirus_id, nic)]
+```
+
+On a assez peu de lignes (`r nrow(data.table::rbindlist(details_char_191))`) concernées.  
+On va chercher si quelques expressions régulières simples permettraient de corriger simplement ces caractères
+
+### Expressions régulières utiles au nettoyage du caractère ¿
+
+Avec les regex/replacement suivantes, on arrive à nettoyer un peu plus de 600 caractères ¿ : 
+```{r}
+regex_191 <-
+  tibble::tribble(
+    ~regex, ~replacement,
+    "(?<=N{1}+)\u00bf[ ]*(?=[0123456789])", " ",
+    "1(ER)*[ ]*\u00bf[ ]*(?=IEN)", " PREMIER DEGRE ",
+    "1ER D\u00bf", " PREMIER DEGRE ",
+    "1\u00bf[ ]*DEGRE", " PREMIER DEGRE ",
+    "INCAPACIT\u00bf", " INCAPACITE ",
+    "P\u00bfLE", " POLE ",
+    "D\u00bfTACH\u00bf", " DETACHE ",
+    "(?<=POINTE )\u00bf(?= PITRE)", " A ",
+    "\u00bfDUCATIF", " EDUCATIF",
+    "GROUP\u00bfS", " GROUPES ",
+    "B\u00bfTIMENT", " BATIMENT",
+    "ACTIVIT\u00bf", " ACTVITE",
+    "CH\u00bfNES", " CHENES ",
+    "FORESTI\u00bfRE", " FORESTIERE",
+    "TH\u00bfATRE", " THEATRE",
+    "PUBLICIT\u00bf", " PUBLICITE",
+    "\u00bfCONOMI", " ECONOMI",
+    "RIVI\u00bfRE", " RIVIERE",
+    "\u00bf(?= DOMICI)", " A ",
+    "\u00bf(?= VOCATION)", " A ",
+    "AFFECT\u00bfE", "AFFECTEE",
+    "FRAN\u00bfAIS", "FRANCAIS",
+    "CAF\u00bf", " CAFE ",
+    "G\u00bfTE", " GITE ",
+    "ALEN\u00bfON", " ALENCON ",
+    "AM\u00bfNAGEMENT", " AMENAGEMENT ",
+    "MEUBL\u00bf", "MEUBLE",
+    "HYGI\u00bfNE", "HYGIENE",
+    "KINESITH\u00bfRAPIE", "KINESITHERAPIE",
+    "AG\u00bf", "AGE",
+    "UNIT\u00bf", "UNITE",
+    "T\u00bfTE", "TETE",
+    "\u00bfCOLE", "ECOLE",
+    "COLL\u00bfGE", "COLLEGE",
+    "R\u00bf\u00bfDUC", "REEDUC",
+    "S\u00bfJOUR", "SEJOUR",
+    "GAR\u00bfON", "GARCON",
+    "\u00bfPIL", "EPIL",
+    "CUISIN\u00bf", "CUISINE",
+    "S\u00bfCURIT\u00bf", "SECURITE",
+    "PRIV\u00bf", "PRIVE",
+    "\u00bfTUDE", "ETUDE",
+    "P\u00bfVILLON", "PAVILLON",
+    "MOSA\u00bfQUE", "MOSAIQUE",
+    "1\u00bfDIVISION", "PREMIERE DIVISION",
+    "R\u00bfCR\u00bf", "RECRE",
+    "PR\u00bfORIENTATION", "PREORIENTATION",
+    "D\u00bfPARTEMENT", "DEPARTEMENT",
+    "APP\u00bfT", "APPAT",
+    "FA\u00bfON", "FACON",
+    "G\u00bfRARD", "GERARD",
+    "GWENA\u00bfL", "GWENAEL",
+    "MICHA\u00bfL", "MICHAEL",
+    "THA\u00bf", "THAI",
+    "KORSN\u00bfS", "KORSNOS",
+    "3[ ]*\u00bf[ ]*AGE", "3 EME AGE",
+    "(?<=[234567890][ ]?)\u00bfME", " EME ",
+    "(?<=[023456789][ ]?)\u00bf[ ]?(?=RI)", " EME ",
+    "(?<=[023456789][ ]?)\u00bf[ ]?(?=CIRC)", " EME "
+  )
+``` 
+
+Voici ce que donne l'utilisation de ces regex :
+
+```{r echo=FALSE}
+test <- data.table::rbindlist(details_char_191)
+
+data.table::set(
+  test, 
+  j = "valeur_c", 
+  value = stringi::stri_replace_all(
+    test[["valeur"]],
+    regex_191[["replacement"]],
+    regex = regex_191[["regex"]],
+    vectorize_all = FALSE
+  )
+)
+test
+```
+
+Si on voulait parfaire le travail, il resterait encore à nettoyer les chaînes de caractères suivantes :
+
+```{r echo=FALSE}
+`%like%` <- data.table::`%like%`
+
+test[valeur_c %like% "\u00bf", ]
+```
+
+On applique ces regex/replacement à `Sirus` :
+
+```{r eval=FALSE}
+for(j in champ_char_191$champ) {
+  data.table::set(
+    sirus, 
+    j = j, 
+    value = stringi::stri_replace_all(
+      sirus[[j]], 
+      regex_191[["replacement"]], 
+      regex = regex_191[["regex"]],
+      vectorize_all = FALSE
+    )
+  )
+}
+```
+
+
